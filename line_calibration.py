@@ -1,7 +1,7 @@
-"""line_calibration.py - save/load the black/white calibration as JSON (Lab 0x06).
+"""SOME INFO: save/load the black/white calibration as JSON (Lab 0x06).
 
 File format (same as the course helper):
-  {"channels": [1..13], "black": [13 averages], "white": [13 averages]}
+  {"channels": [1 to 13], "black": [13 averages], "white": [13 averages]}
 Values are raw ADC averages on the 0-4095 scale (NOT normalized weights).
 """
 import json
