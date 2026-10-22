@@ -1,0 +1,322 @@
+"""taskuser"""
+S1_INIT = 1
+S2_HELP = 2
+S3_WAIT_CMD = 3
+S4_WAIT_DATA = 4
+S5_PRINT_DATA = 5
+S6_EXIT = 6
+S7_INPUT = 7
+S8_WAIT_RESET = 8
+S9_WAIT_LINE = 9
+S10_PRINT_LINE = 10
+
+CHARS_PER_PASS = 8    # Max chars read per task iteration
+LINES_PER_PASS = 4    # Max lines sent per task iteration
+
+MAX_SP = 50
+MAX_KP = 5
+MAX_KI = 50
+MAX_BASE = 30    # Speed limit [rad/s]
+MAX_LKP = 2    # Gain limit [(rad/s)/mm]
+MAXIMUMS = {"Setpoint": MAX_SP, "Kp": MAX_KP, "Ki": MAX_KI,
+            "Base": MAX_BASE, "LineKp": MAX_LKP}
+
+
+class TaskUser:
+    def __init__(self, ser, left, right, config, line):
+        self.ser = ser    # The USB serial port
+        self.left = left    # (go:0, done:1, time_q:2, pos_q:3, vel_q:4, volt_q:5, sp:6, kp:7, ki:8)
+        self.right = right
+        self.config = config
+        self.line = line    # (go:0, done:1, base:2, kp:3, time_q:4, cen_q:5, follow:6)
+        self.line_para = (0, 0, 0, 0)    # (base, line kp, inner kp, inner ki)
+        self.active = None    # Which task's data we are waiting on or printing
+        self.active_name = ""
+        self.active_para = (0, 0, 0)    # (sp, kp, ki)
+        self.values = {"Setpoint": 0, "Kp": 0, "Ki": 0, "Base": 0, "LineKp": 0}
+        self.input_name = "Setpoint"    # Current input
+        self.buf = []    # Characters typed so far
+        self.pending = []    # Header lines that need to print
+        self.help_index = 0
+        self.state = S1_INIT
+
+        self.help_lines = [
+            "ME 4305 Romi Closed-Loop Test Interface by Deja Jones and Anish Kaul",
+            "h or H: Help menu",
+            "s or S: Enter a velocity setpoint <= " + str(MAX_SP) + "[rad/s]",
+            "p or P: Enter a proportional gain, Kp, from 0 to " + str(MAX_KP) + " [V/(rad/s)]",
+            "i or I: Enter an integral gain, Ki, from 0 to " + str(MAX_KI) + " [V/rad]",
+            "l or L: Left Motor: Run and print a step response",
+            "r or R: Right Motor: Run and print a step response",
+            "b or B: Enter a line-following base speed <= " + str(MAX_BASE) + " [rad/s]",
+            "k or K: Enter a line gain, 0 to " + str(MAX_LKP) + " [(rad/s)/mm]",
+            "f or F: Follow the line and print the data",
+            "e or E: Exit",
+        ]
+
+    def _read_char(self):
+        try:
+            return self.ser.read(1).decode()
+        except UnicodeError:
+            return "?"
+
+    def _begin_input(self, name):
+        self.input_name = name
+        self.buf = []
+        self.ser.write("\r\nEnter " + name + ": ")
+        self.state = S7_INPUT
+
+    def _finish_input(self):
+        text = "".join(self.buf)
+        self.buf = []
+        name = self.input_name
+        try:
+            value = float(text)
+        except ValueError:
+            self.ser.write("\r\nError: Invalid input. " + name + " unchanged.\r\n>: ")
+        else:
+            if value != value or abs(value) > MAXIMUMS[name]:    # None or out of range
+                self.ser.write("\r\nError: Unacceptable value. " + name + " must be <=" +
+                               str(MAXIMUMS[name]) + ". " + name + " unchanged.\r\n>: ")
+            else:
+                self.values[name] = value
+                self.ser.write("\r\n" + name + " set to " + str(value) + "\r\n>: ")
+        self.state = S3_WAIT_CMD
+
+    def _start_test(self, shares, name):
+        self.line[6].put(0)    # follow_mode = 0 (step test)
+        shares[6].put(self.values["Setpoint"])
+        shares[7].put(self.values["Kp"])
+        shares[8].put(self.values["Ki"])
+        shares[0].put(1)    # go = 1
+        self.active = shares
+        self.active_name = name
+        self.active_para = (self.values["Setpoint"], self.values["Kp"], self.values["Ki"])
+        self.ser.write("Starting closed-loop test. \r\n")
+        self.state = S4_WAIT_DATA
+
+    def _start_follow(self):
+        self.line[6].put(1)    # follow_mode = 1, set before go
+        for shares in (self.left, self.right):
+            shares[6].put(0)    # Wheel setpoint start = 0
+            shares[7].put(self.values["Kp"])
+            shares[8].put(self.values["Ki"])
+        self.line[2].put(self.values["Base"])
+        self.line[3].put(self.values["LineKp"])
+        self.line_para = (self.values["Base"], self.values["LineKp"],
+                          self.values["Kp"], self.values["Ki"])
+        self.left[0].put(1)    # Motors go
+        self.right[0].put(1)
+        self.line[0].put(1)    # Line task go
+        self.active = (self.line[0], self.line[1])    
+        self.active_name = "Line"
+        self.ser.write("Starting line following. \r\n")
+        self.state = S9_WAIT_LINE
+
+    def _request_exit(self):
+        if self.active is not None:
+            self.ser.write("Exit Requested. Test Stopped.\r\n")
+        self.left[0].put(0)    # go = 0 aborts any test
+        self.right[0].put(0)
+        self.line[0].put(0)
+        self.ser.write("Exiting.\r\n")
+        self.state = S6_EXIT
+
+    def _build_header(self, status):
+        sp, kp, ki = self.active_para
+        c = self.config
+        if ki > 0:
+            structure = "PI"
+        else:
+            structure = "P"
+        return [
+            "# Motor: " + self.active_name,
+            "# Control structure: " + structure,
+            "# Setpoint [rad/s]: " + str(sp),
+            "# Kp [V/(rad/s)]: " + str(kp),
+            "# Ki [V/rad]: " + str(ki),
+            "# Motor task period [ms]: " + str(c["motor_ms"]),
+            "# User task period [ms]: " + str(c["user_ms"]),
+            "# Trial duration [ms]: " + str(c["duration_ms"]),
+            "# Battery voltage [V]: " + str(c["v_supply"]),
+            "# Voltage limits [V]: " + str(-c["v_supply"]) + " to " + str(c["v_supply"]),
+            "# Step: setpoint applied at t = 0 ms",
+            "# Units: time [ms], setpoint [rad/s], position [rad], velocity [rad/s], voltage [V]",
+            "# Status: " + status,
+            "time_ms,setpoint_rad_s,position_rad,velocity_rad_s,voltage_V",
+        ]
+
+    def _build_line_header(self):
+        c = self.config
+        base, lkp, kp, ki = self.line_para
+        return [
+            "# Mode: line following",
+            "# Base speed [rad/s]: " + str(base),
+            "# Line Kp [(rad/s)/mm]: " + str(lkp),
+            "# Inner Kp [V/(rad/s)]: " + str(kp),
+            "# Inner Ki [V/rad]: " + str(ki),
+            "# Motor task period [ms]: " + str(c["motor_ms"]),
+            "# Line task period [ms]: " + str(c["line_ms"]),
+            "# User task period [ms]: " + str(c["user_ms"]),
+            "# Duration [ms]: " + str(c["line_duration_ms"]),
+            "# Samples per channel per batch: " + str(c["n_samples"]),
+            "# ADC timer frequency [Hz]: " + str(c["timer_freq"]),
+            "# Battery voltage [V]: " + str(c["v_supply"]),
+            "# None = line not seen (centroid undefined)",
+            "time_ms,centroid_mm",
+        ]
+
+    def run(self):
+        while True:
+            if self.state == S1_INIT:
+                self.help_index = 0
+                self.state = S2_HELP
+
+            elif self.state == S2_HELP:
+                if self.help_index < len(self.help_lines):
+                    self.ser.write(self.help_lines[self.help_index] + "\r\n")
+                    self.help_index += 1
+                else:
+                    self.ser.write("\r\n>: ")
+                    self.state = S3_WAIT_CMD
+
+            elif self.state == S3_WAIT_CMD:
+                if self.ser.any():
+                    ch = self._read_char()
+                    if ch in {"h", "H"}:
+                        self.help_index = 0
+                        self.state = S2_HELP
+                    elif ch in {"s", "S"}:
+                        self._begin_input("Setpoint")
+                    elif ch in {"p", "P"}:
+                        self._begin_input("Kp")
+                    elif ch in {"i", "I"}:
+                        self._begin_input("Ki")
+                    elif ch in {"l", "L"}:
+                        self._start_test(self.left, "Left")
+                    elif ch in {"r", "R"}:
+                        self._start_test(self.right, "Right")
+                    elif ch in {"b", "B"}:
+                        self._begin_input("Base")
+                    elif ch in {"k", "K"}:
+                        self._begin_input("LineKp")
+                    elif ch in {"f", "F"}:
+                        self._start_follow()
+                    elif ch in {"e", "E"}:
+                        self._request_exit()
+                    elif ch in {"\r", "\n"}:
+                        self.ser.write("\r\n>: ")
+                    else:
+                        self.ser.write("\r\nInvalid command, press h\r\n>: ")
+
+            elif self.state == S7_INPUT:
+                for _ in range(CHARS_PER_PASS):
+                    if not self.ser.any():
+                        break
+                    ch = self._read_char()
+                    if ch in {"\r", "\n"}:
+                        self._finish_input()
+                        break
+                    elif ch in {"e", "E"}:    # Exit whenever
+                        self._request_exit()
+                        break
+                    elif ch in {"\x7f", "\x08"}:
+                        if self.buf:
+                            self.buf.pop()
+                            self.ser.write("\b \b")
+                    elif "0" <= ch <= "9" and ch != "":
+                        self.buf.append(ch)
+                        self.ser.write(ch)
+                    elif ch == "-" and self.input_name == "Setpoint" and not self.buf:
+                        self.buf.append(ch)
+                        self.ser.write(ch)
+                    elif ch == "." and "." not in self.buf:
+                        self.buf.append(ch)
+                        self.ser.write(ch)
+
+            elif self.state == S4_WAIT_DATA:
+                if self.ser.any():
+                    ch = self._read_char()
+                    if ch in {"e", "E"}:
+                        self._request_exit()
+                if self.state == S4_WAIT_DATA:
+                    status = self.active[1].get()
+                    if status:
+                        if status == 1:
+                            self.pending = self._build_header("Succeeded.")
+                        else:
+                            self.pending = self._build_header("Failed")
+                        self.state = S5_PRINT_DATA
+
+            elif self.state == S5_PRINT_DATA:
+                tq, pq, vq, uq = (self.active[2], self.active[3], self.active[4], self.active[5])
+                sp = self.active_para[0]
+                if self.ser.any():
+                    ch = self._read_char()
+                    if ch in {"e", "E"}:
+                        self._request_exit()
+                if self.state == S5_PRINT_DATA:
+                    for _ in range(LINES_PER_PASS):
+                        if self.pending:
+                            self.ser.write(self.pending.pop(0) + "\r\n")
+                        elif tq.any():
+                            self.ser.write("{},{:.3f},{:.3f},{:.3f},{:.3f}\r\n".format(
+                                tq.get(), sp, pq.get(), vq.get(), uq.get()))
+                        else:
+                            self.ser.write("End of data\r\n")
+                            self.active[0].put(0)
+                            self.state = S8_WAIT_RESET
+                            break
+
+            elif self.state == S9_WAIT_LINE:
+                if self.ser.any():
+                    ch = self._read_char()
+                    if ch in {"e", "E"}:
+                        self._request_exit()
+                if self.state == S9_WAIT_LINE:
+                    if self.line[1].get():    # line_done = 1
+                        self.pending = self._build_line_header()
+                        self.state = S10_PRINT_LINE
+
+            elif self.state == S10_PRINT_LINE:
+                tq, cq = self.line[4], self.line[5]
+                if self.ser.any():
+                    ch = self._read_char()
+                    if ch in {"e", "E"}:
+                        self._request_exit()
+                if self.state == S10_PRINT_LINE:
+                    for _ in range(LINES_PER_PASS):
+                        if self.pending:
+                            self.ser.write(self.pending.pop(0) + "\r\n")
+                        elif tq.any():
+                            t = tq.get()
+                            c = cq.get()
+                            if c != c:    # None = undefined centroid
+                                self.ser.write("{},None\r\n".format(t))
+                            else:
+                                self.ser.write("{},{:.3f}\r\n".format(t, c))
+                        else:
+                            self.ser.write("End of data\r\n")
+                            self.active[0].put(0)    # line go = 0
+                            self.state = S8_WAIT_RESET
+                            break
+
+            elif self.state == S8_WAIT_RESET:
+                if self.ser.any():
+                    ch = self._read_char()
+                    if ch in {"e", "E"}:
+                        self._request_exit()
+                if self.state == S8_WAIT_RESET:
+                    if not self.active[1].get():
+                        self.active = None
+                        self.ser.write("\r\n>: ")
+                        self.state = S3_WAIT_CMD
+
+            elif self.state == S6_EXIT:
+                pass
+
+            else:
+                raise ValueError('Invalid state')
+
+            yield self.state
+            
