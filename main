@@ -13,7 +13,7 @@ from line_sensor import N_SAMPLES, TIMER_FREQ
 from line_startup import get_line_sensor
 
 Pin(Pin.cpu.C8, Pin.OUT_PP).low()    # Left nSLP
-Pin(Pin.cpu.C7, Pin.OUT_PP).low()    # Right nSLP
+Pin(Pin.cpu.B9, Pin.OUT_PP).low()    # Right nSLP
 
 line_sensor = get_line_sensor()    # Calibrate before the scheduler starts
 
@@ -63,7 +63,7 @@ def print_profile(plist):
 
 pwm_tim = Timer(2, freq=20_000)    # Motor PWM timer
 motor_L = Motor(Pin.cpu.A15, Pin.cpu.C9, Pin.cpu.C8, pwm_tim, 1)
-motor_R = Motor(Pin.cpu.B3, Pin.cpu.C6, Pin.cpu.C7, pwm_tim, 2)
+motor_R = Motor(Pin.cpu.B3, Pin.cpu.C6, Pin.cpu.B9, pwm_tim, 2)
 
 enc_tim_L = Timer(3, period=0xFFFF, prescaler=0)
 encoder_L = Encoder(enc_tim_L, Pin.cpu.B4, Pin.cpu.B5)
