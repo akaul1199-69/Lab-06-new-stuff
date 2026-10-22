@@ -1,0 +1,55 @@
+"""task share"""
+
+from array import array
+
+
+class Share:
+    def __init__(self, type_code, name=None):
+        self.name = name
+        self._v = array(type_code, [0])
+
+    def put(self, value):
+        self._v[0] = value
+
+    def get(self):
+        return self._v[0]
+
+
+class Queue:
+    def __init__(self, type_code, size, name=None):
+        self.name = name
+        self._size = size
+        self._buf = array(type_code, [0] * size)
+        self._head = 0      # next slot to write
+        self._tail = 0      # next slot to read
+        self._count = 0
+
+    def put(self, item):
+        if self._count >= self._size:
+            raise IndexError("Queue full: " + str(self.name))
+        self._buf[self._head] = item
+        self._head = (self._head + 1) % self._size
+        self._count += 1
+
+    def get(self):
+        if self._count == 0:
+            raise IndexError("Queue empty: " + str(self.name))
+        item = self._buf[self._tail]
+        self._tail = (self._tail + 1) % self._size
+        self._count -= 1
+        return item
+
+    def any(self):
+        return self._count > 0
+
+    def empty(self):
+        return self._count == 0
+
+    def full(self):
+        return self._count >= self._size
+
+    def num_in(self):
+        return self._count
+
+    def clear(self):
+        self._head = self._tail = self._count = 0
