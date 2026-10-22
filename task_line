@@ -1,0 +1,87 @@
+"""taskline"""
+from time import ticks_ms, ticks_diff
+
+S1_INIT = 1
+S2_IDLE = 2
+S3_FOLLOW = 3
+S4_FINISHED = 4
+
+DONE_SUCCEEDED = 1
+
+MAX_SP = 50    # Same limit as the user interface [rad/s]
+NAN = float("nan")    # Marks an undefined centroid in the log
+
+
+class TaskLine:
+    def __init__(self, sensor, go, done, base, kp, left_sp, right_sp,
+                 left_go, right_go, time_q, cen_q):
+        self.sensor = sensor
+        self.go = go    # Share user -> line (1 = follow, 0 = stop)
+        self.done = done    # Share line -> user (1 = data ready)
+        self.base = base    # Share user -> line, base speed [rad/s]
+        self.kp = kp    # Share user -> line, line gain [(rad/s)/mm]
+        self.left_sp = left_sp    # Shares line -> motor tasks
+        self.right_sp = right_sp
+        self.left_go = left_go    # Motor go shares, used to stop the motors
+        self.right_go = right_go
+        self.time_q = time_q    # Queues line -> user
+        self.cen_q = cen_q    # Centroid [mm], nan if undefined
+
+        self.state = S1_INIT
+        self.start = 0
+        self.base_val = 0
+        self.kp_val = 0
+
+    def _clamp(self, value):
+        return max(-MAX_SP, min(MAX_SP, value))
+
+    def run(self):
+        """Generator: each next() runs ONE pass of the state machine."""
+        while True:
+            if self.state == S1_INIT:
+                self.go.put(0)
+                self.done.put(0)
+                self.state = S2_IDLE
+
+            elif self.state == S2_IDLE:
+                if self.go.get():
+                    self.base_val = self.base.get()
+                    self.kp_val = self.kp.get()
+                    self.time_q.clear()
+                    self.cen_q.clear()
+                    self.start = ticks_ms()
+                    self.state = S3_FOLLOW
+
+            elif self.state == S3_FOLLOW:
+                if not self.go.get():    # User stopped, stop the wheels
+                    self.left_sp.put(0)
+                    self.right_sp.put(0)
+                    self.state = S2_IDLE
+                elif self.time_q.full():    # Dataset finished
+                    self.left_sp.put(0)
+                    self.right_sp.put(0)
+                    self.left_go.put(0)
+                    self.right_go.put(0)
+                    self.done.put(DONE_SUCCEEDED)
+                    self.state = S4_FINISHED
+                else:
+                    t_ms = ticks_diff(ticks_ms(), self.start)
+                    centroid = self.sensor.read()    # mm, + = line on left
+                    if centroid is None:    # Line lost, keep last setpoints
+                        self.cen_q.put(NAN)
+                    else:
+                        corr = self.kp_val * centroid
+                        self.left_sp.put(self._clamp(self.base_val - corr))    # Swap - and + if turns backwards
+                        self.right_sp.put(self._clamp(self.base_val + corr))
+                        self.cen_q.put(centroid)
+                    self.time_q.put(t_ms)
+
+            elif self.state == S4_FINISHED:
+                if not self.go.get():    # Wait until the user has printed the data
+                    self.done.put(0)
+                    self.state = S2_IDLE
+
+            else:
+                raise ValueError('Invalid state')
+
+            yield self.state
