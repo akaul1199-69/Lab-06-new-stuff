@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """SOME INFO: line_startup.py - startup calibration for the line sensor (Lab 0x06, this is Step 3).
 
 Call get_line_sensor() in main.py BEFORE the scheduler starts, with the motors
