@@ -1,5 +1,5 @@
 """ (Lab 0x06).
-
+Line sensor
 
 Hardware objects (the Timer) are created by the caller and passed in. This module
 does not touch the motors.
