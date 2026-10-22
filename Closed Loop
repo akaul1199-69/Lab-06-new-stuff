@@ -1,0 +1,25 @@
+"""ClosedLoop"""
+def volts_to_duty(volts, v_sup):
+    """Converts voltage to duty cycle, clamped to +/-100%"""
+    return max(-100, min(100, 100*volts/v_sup))
+
+class ClosedLoop:
+    def __init__(self):
+        self.integral = 0      # error
+ 
+    def reset(self):
+        """ Every test starts from the same state"""
+        self.integral = 0
+ 
+    def update(self, setpoint, meas, kp, ki, delta_t, v_min, v_max):
+        error = setpoint - meas
+        v_req = kp * error + ki * self.integral
+ 
+        v_sat = min(v_max, max(v_min, v_req))   # voltage saturation
+ 
+        # Don't integrate if the output is already saturated
+        pushing_out = (v_req > v_max and error > 0) or (v_req < v_min and error < 0)
+        if not pushing_out:
+            self.integral += error * delta_t
+ 
+        return v_sat
