@@ -1,0 +1,26 @@
+"""Original"""
+from pyb import Pin, Timer
+
+class Motor:
+   
+     
+    def __init__(self, PWM, DIR, nSLP, tim, channel):
+        '''Initializes a Motor object'''
+        self.nSLP_pin = Pin(nSLP, mode=Pin.OUT_PP, value=0)
+        self.DIR_pin = Pin(DIR, mode=Pin.OUT_PP, value=0)
+        self.PWM_chan = tim.channel(channel, pin=PWM, mode=Timer.PWM, pulse_width_percent=0)
+   
+    def set_effort(self, effort):
+        if effort >= 0:
+            self.DIR_pin.high()
+            self.PWM_chan.pulse_width_percent(effort)
+        else:
+            self.DIR_pin.low()
+            self.PWM_chan.pulse_width_percent(-effort)
+           
+    def enable(self):
+        self.nSLP_pin.high()
+        self.set_effort(0)
+           
+    def disable(self):
+        self.nSLP_pin.low()
