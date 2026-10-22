@@ -1,19 +1,10 @@
-"""line_sensor.py - Pololu QTR-HD-13A reflectance array driver (Lab 0x06).
+""" (Lab 0x06).
 
-Provides: timed multi-channel ADC oversampling, per-channel normalization with
-clipping, and the weighted line centroid in millimetres.
 
 Hardware objects (the Timer) are created by the caller and passed in. This module
 does not touch the motors.
 
-WIRING TABLE (printed channel -> MCU pin -> lateral position)
-  position = lateral offset from the array centre in mm, + toward Romi's LEFT.
-  CH1_ON_RIGHT = True  means printed channel 1 is at Romi's RIGHT end of the array
-  (connector pointing toward the rear). If the bar-graph test shows the centroid
-  with the wrong sign, flip this flag.
-    ch  1 -> A0   ch  2 -> A1   ch  3 -> A4   ch  4 -> B0   ch  5 -> C1
-    ch  6 -> C0   ch  7 -> C2   ch  8 -> C3   ch  9 -> A6   ch 10 -> A7
-    ch 11 -> C5   ch 12 -> C4   ch 13 -> A5
+NEW WIRING TABLE in memo document
   Battery sensing is reserved for pin B1 (not used here).
 """
 from array import array
